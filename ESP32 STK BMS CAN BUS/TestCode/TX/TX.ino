@@ -23,11 +23,11 @@ void setup(void) {
 void setup_can_driver(void){
   can_general_config_t g_config = { // Create g_config for setup CAN Parameter
     .mode = CAN_MODE_NORMAL,
-    .tx_io = GPIO_NUM_35, // CAN TX Pin GPIO_35  or 26 for test module
-    .rx_io = GPIO_NUM_32, // CAN RX Pin GPIO_32  or 27 for test module
+    .tx_io = GPIO_NUM_26, // CAN TX Pin GPIO_26
+    .rx_io = GPIO_NUM_27, // CAN RX Pin GPIO_27
     .clkout_io = ((gpio_num_t) - 1),
     .bus_off_io = ((gpio_num_t) - 1),
-    .tx_queue_len = 0,
+    .tx_queue_len = 5,
     .rx_queue_len = 5,
     .alerts_enabled = CAN_ALERT_ALL,
     .clkout_divider = 0
