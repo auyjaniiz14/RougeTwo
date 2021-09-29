@@ -5,8 +5,12 @@
  * Date create/modified : 04-08-21
  */
 
-#include "driver/gpio.h"
-#include "driver/can.h"
+#include <Arduino.h>
+#include <stdint.h>
+#include "Dataconversion.h"
+#include "driver/gpio.h" // only use in board ESP32
+#include "driver/can.h" // only use in board ESP32
+
 
 // BMS State data assign
 uint16_t sys_voltage, sys_current; // 16-bit data
@@ -28,6 +32,29 @@ int soc_high, soc_low, det_temp, det_cell_vol; // byte 3 data
 int bms_commu_fault, vcu_timeout_malf, sum_vol_diff_malf, port_temp_high; // byte 4 data
 int st_pos_relay, st_chg_relay, st_neg_relay, st_prechg_relay, dc_dc_relay; // byte 5 data
 int air_pump_relay, port_temp_relay; // byte 6 data
+
+// Battery Spec data assign
+uint16_t bms_serial_nr, v_max_cell_spec, I_ch_max_cell_spec; // 16-bit data
+uint8_t batt_vendor_nr, t_max_cell_spec; // 8-byte data
+
+// Accumulate Spec data assign
+uint32_t master_timer; // 32-bit data
+uint16_t acc_charge, acc_discharge; // 16-bit data
+
+// SOH data assign
+uint16_t soh_data;
+
+// Assign message id for can transmitter
+uint32_t bms_state_id = 0x10FF50F4;
+uint32_t cell_vol_1_id = 0x18FF51F4;
+uint32_t cell_vol_2_id = 0x18FF52F4;
+uint32_t cell_temperature_id = 0x18FF53F4;
+uint32_t battery_sys_state_id = 0x18FF54F4;
+uint32_t battery_spec_id = 0x18FF60F4;
+uint32_t accumulate_data_id = 0x18F009A0;
+uint32_t soh_id = 0x18F001A0;
+
+
 
 void setup_can_driver(){
   can_general_config_t g_config = { // Create g_config for setup CAN Parameter
@@ -58,13 +85,36 @@ void setup_can_driver(){
 void setup(void) {
   Serial.begin(115200);
   setup_can_driver();
+  /*
+   * Initial data value
+   */
+  sys_voltage = sys_voltage_conv(72); // voltage 72 v
+  sys_current = sys_current_conv(32); // current 63 A
+  sys_soc = sys_soc_conv(60); // Soc = 60%
+
+  cell_max_vol = 3200; // 3200 mV
+  cell_min_vol = 3200; // 3200 mV
+  cell_ave_vol = 3200; // 3200 mV
+  
+  chg_current_limit = chg_current_limit_conv(72); // 72 A
+  dchg_current_limit = dchg_current_limit_conv(100); // 100 A
+
+  cell_max_temp = cell_max_temp_conv(70); // 70
+  cell_min_temp = cell_min_temp_conv(65); // 35
+  cell_ave_temp = cell_ave_temp_conv(40); // 40
+
+  max_chg_current = max_chg_current_conv(60); // 60 A 
+
+  I_ch_max_cell_spec = I_ch_max_cell_spec_conv(30); // 30 A
+
+  acc_charge = acc_charge_conv(40000);
+  acc_discharge = acc_discharge_conv(40000);
+
+  soh_data = soh_conv(95); // Soh = 95%
 }
 
 void loop(void) {
-  sys_voltage = random(4000,8000);
-  sys_current = random(250,500);
-  sys_soc = map(sys_voltage,4000,8000,125,250);
-  periodic_message();
+  periodic_message2();
 }
 
 /*
@@ -73,14 +123,18 @@ void loop(void) {
  */
 
 void periodic_message(void); // Send periodic can message by different state cycle
+void periodic_message2(void);
 void bms_state(void);
 void cell_vol_1(void);
 void cell_vol_2(void);
 void cell_temperature(void);
 void battery_sys_state(void);
+void battery_spec(void);
+void accumulate_data(void);
+void soh(void);
 
 void bms_state(){
-  byte byte5 = 0b00000000; /* chg_indication, chg_link, sys_status
+  byte byte5 = 0b10010100; /* chg_indication, chg_link, sys_status
   byte5 data default is 0b00000000
   bit4/bit3/bit2/bit1:Battery system Status
   0000： Get Ready 
@@ -99,7 +153,7 @@ void bms_state(){
   10： charge full 
   11： charge error 
   */
-  byte byte6 = 0b00000000; /* insu_fade, power_off_rqst, bms_self_check, err_level
+  byte byte6 = 0b01100001; /* insu_fade, power_off_rqst, bms_self_check, err_level
   byte6 data default is 0b00000000
   bit2/bit1:Error level of battery system
   00： Norma    
@@ -119,16 +173,16 @@ void bms_state(){
   00： Normal 
   01： Warning  <500Ω/V，
   10： Alarm    <100Ω/V
-  */ 
+  */
   can_message_t txmessage;
-  txmessage.identifier = 0x10FF50F4; // message id for bms state
+  txmessage.identifier = bms_state_id; // message id for bms state
   txmessage.flags = CAN_MSG_FLAG_EXTD;
   txmessage.data_length_code = 8; // 8 Byte Data Send
   txmessage.data[0] = sys_voltage >> 8;
   txmessage.data[1] = sys_voltage;
   txmessage.data[2] = sys_current >> 8;
   txmessage.data[3] = sys_current;
-  txmessage.data[4] = sys_soc;
+  txmessage.data[4] = sys_soc; // Soc = N*x + C by x = 0.4
   txmessage.data[5] = byte5;
   txmessage.data[6] = byte6;
   txmessage.data[7] = can_counter;
@@ -144,7 +198,7 @@ void bms_state(){
 
 void cell_vol_1(){
   can_message_t txmessage;
-  txmessage.identifier = 0x18FF51F4; // message id for cell vol 1
+  txmessage.identifier = cell_vol_1_id; // message id for cell vol 1
   txmessage.flags = CAN_MSG_FLAG_EXTD;
   txmessage.data_length_code = 8; // 8 Byte Data Send
   txmessage.data[0] = cell_max_vol >> 8;
@@ -166,7 +220,7 @@ void cell_vol_1(){
 
 void cell_vol_2(){
   can_message_t txmessage;
-  txmessage.identifier = 0x18FF52F4; // message id for cell vol 2
+  txmessage.identifier = cell_vol_2_id; // message id for cell vol 2
   txmessage.flags = CAN_MSG_FLAG_EXTD;
   txmessage.data_length_code = 8; // 8 Byte Data Send
   txmessage.data[0] = cell_ave_vol >> 8;
@@ -188,7 +242,7 @@ void cell_vol_2(){
 
 void cell_temperature(){
   can_message_t txmessage;
-  txmessage.identifier = 0x18FF53F4; // message id for cell temp
+  txmessage.identifier = cell_temperature_id; // message id for cell temp
   txmessage.flags = CAN_MSG_FLAG_EXTD;
   txmessage.data_length_code = 8; // 8 Byte Data Send
   txmessage.data[0] = cell_max_temp;
@@ -209,7 +263,7 @@ void cell_temperature(){
 }
 
 void battery_sys_state(){
-  byte byte1 = 0b00000000; /* TempLow, TempHigh, CellVolLow, CellVolHigh
+  byte byte1 = 0b01101001; /* TempLow, TempHigh, CellVolLow, CellVolHigh
   byte1 data default is 0b00000000
   bit2/bit1 : CellVolHigh
   00  Normal
@@ -232,7 +286,7 @@ void battery_sys_state(){
   10  ErrLevel Two : Battery Warning ， VCU Reduced power
   11  ErrLevel Three : Battery Alarm  and  Charging-discharging  Power failure
   */
-  byte byte2 = 0b00000000; /*
+  byte byte2 = 0b01101001; /*
   byte2 data default is 0b00000000 
   bit2/bit1 : SumVolHigh
   00  Normal
@@ -255,7 +309,7 @@ void battery_sys_state(){
   10  ErrLevel Two : Battery Warning ， VCU Reduced feelback power
   11  ErrLevel Three : Battery Alarm  and  VCU Reduced feelback power"
   */
-  byte byte3 = 0b00000000; /*
+  byte byte3 = 0b01101001; /*
   byte3 data default is 0b00000000
   bit2/bit1 : SOC High
   00  Normal
@@ -278,7 +332,7 @@ void battery_sys_state(){
   10  ErrLevel Two 
   11  ErrLevel Three "
   */
-  byte byte4 = 0b00000000; /* BMS/Communiation Fault, VCU timeout malf, Sum Voltage diff malf, Port Temp High
+  byte byte4 = 0b01101001; /* BMS/Communiation Fault, VCU timeout malf, Sum Voltage diff malf, Port Temp High
   byte4 data default is 0b00000000
   bit2/bit1 : BMS/Communication Fault
   00  Normal
@@ -301,7 +355,7 @@ void battery_sys_state(){
   10  ErrLevel Two : Battery Warning ， VCU Reduced power
   11  ErrLevel Three : Battery Alarm  and  Charging-discharging  Power failure"
   */
-  byte byte5 = 0b00000000; /* St_Pos_Relay, St_chargeRelay, St_neg_Relay, DC/DC Relay
+  byte byte5 = 0b01101001; /* St_Pos_Relay, St_chargeRelay, St_neg_Relay, DC/DC Relay
   byte5 data default is 0b00000000
   bit2/bit1 : St_Pos_Relay
   00 ：open    
@@ -324,7 +378,7 @@ void battery_sys_state(){
   10 ：Error    Relay failure
   11 ；useless "
   */
-  byte byte6 = 0b00000000; /* Air Pump Relay, Max Charge Current
+  byte byte6 = 0b01101001; /* Air Pump Relay, Max Charge Current
   byte6 data default is 0b00000000
   bit2/bit1 : Air Pump Relay
   00 ：open    
@@ -338,7 +392,7 @@ void battery_sys_state(){
   11 ；useless "
   */
   can_message_t txmessage;
-  txmessage.identifier = 0x18FF54F4; // message id for cell temp
+  txmessage.identifier = battery_sys_state_id; // message id for Battery Sys State
   txmessage.flags = CAN_MSG_FLAG_EXTD;
   txmessage.data_length_code = 8; // 8 Byte Data Send
   txmessage.data[0] = byte1;
@@ -358,12 +412,107 @@ void battery_sys_state(){
   delay(1);
 }
 
+void battery_spec(){
+  can_message_t txmessage;
+  txmessage.identifier = battery_spec_id; // message id for Battery Spec
+  txmessage.flags = CAN_MSG_FLAG_EXTD;
+  txmessage.data_length_code = 8; // 8 Byte Data Send
+  txmessage.data[0] = batt_vendor_nr;
+  txmessage.data[1] = bms_serial_nr >> 8;
+  txmessage.data[2] = bms_serial_nr;
+  txmessage.data[3] = v_max_cell_spec >> 8;
+  txmessage.data[4] = v_max_cell_spec;
+  txmessage.data[5] = t_max_cell_spec;
+  txmessage.data[6] = I_ch_max_cell_spec >> 8;
+  txmessage.data[7] = I_ch_max_cell_spec;
+
+  if (can_transmit(&txmessage, pdMS_TO_TICKS(1000)) == ESP_OK) {
+    Serial.println("message queued for transmission");
+  } else {
+    Serial.println("Failed to queue txmessage for transmission");
+  }
+  delay(1);
+}
+
+void accumulate_data(){
+  can_message_t txmessage;
+  txmessage.identifier = accumulate_data_id; // message id for Battery Spec
+  txmessage.flags = CAN_MSG_FLAG_EXTD;
+  txmessage.data_length_code = 8; // 8 Byte Data Send
+  txmessage.data[0] = acc_charge >> 8;
+  txmessage.data[1] = acc_charge;
+  txmessage.data[2] = acc_discharge >> 8;
+  txmessage.data[3] = acc_discharge;
+  txmessage.data[4] = master_timer >> 24;
+  txmessage.data[5] = master_timer >> 16;
+  txmessage.data[6] = master_timer >> 8;
+  txmessage.data[7] = master_timer;
+
+  if (can_transmit(&txmessage, pdMS_TO_TICKS(1000)) == ESP_OK) {
+    Serial.println("message queued for transmission");
+  } else {
+    Serial.println("Failed to queue txmessage for transmission");
+  }
+  delay(1);
+}
+
+void soh(){
+  byte byte1 = 0b00000000;
+  byte byte2 = 0b00000000;
+  byte byte3 = 0b00000000;
+  byte byte4 = 0b00000000;
+  byte byte7 = 0b00000000;
+  byte byte8 = 0b00000000;
+  can_message_t txmessage;
+  txmessage.identifier = soh_id; // message id for Battery Spec
+  txmessage.flags = CAN_MSG_FLAG_EXTD;
+  txmessage.data_length_code = 8; // 8 Byte Data Send
+  txmessage.data[0] = byte1;
+  txmessage.data[1] = byte2;
+  txmessage.data[2] = byte3;
+  txmessage.data[3] = byte4;
+  txmessage.data[4] = soh_data >> 8; // Soh data max 100
+  txmessage.data[5] = soh_data; // 
+  txmessage.data[6] = byte7;
+  txmessage.data[7] = byte8;
+
+  if (can_transmit(&txmessage, pdMS_TO_TICKS(1000)) == ESP_OK) {
+    Serial.println("message queued for transmission");
+  } else {
+    Serial.println("Failed to queue txmessage for transmission");
+  }
+  delay(1);
+}
+
 void periodic_message(){
   bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state();
   delay(100);
   bms_state(); battery_sys_state();
   delay(100);
+}
+
+void periodic_message2(){
+  bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state(); battery_spec(); accumulate_data(); soh();
+  delay(100);
+  bms_state(); battery_sys_state();
+  delay(100);
   bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state();
+  delay(100);
+  bms_state(); battery_sys_state();
+  delay(100);
+  bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state();
+  delay(100);
+  bms_state(); battery_sys_state();
+  delay(100);
+  bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state();
+  delay(100);
+  bms_state(); battery_sys_state();
+  delay(100);
+  bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state();
+  delay(100);
+  bms_state(); battery_sys_state();
+  delay(100);
+  bms_state(); cell_vol_1(); cell_vol_2(); cell_temperature(); battery_sys_state(); soh();
   delay(100);
   bms_state(); battery_sys_state();
   delay(100);
