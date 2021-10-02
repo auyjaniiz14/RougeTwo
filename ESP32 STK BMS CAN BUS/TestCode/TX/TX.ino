@@ -1,6 +1,6 @@
 /*
  * ESP32 BMS CAN communication to VCU Unit
- * Auther : Rangson Pluemkamon
+ * Author : Rangson Pluemkamon
  * Version : 1.00
  * Date create/modified : 04-08-21
  */
